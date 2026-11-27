@@ -1,0 +1,12 @@
+[package]
+name = "ferrite-recorder"
+description = "Local loopback TCP packet recorder and structural inspector for Ferrite development"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+ferrite-protocol.workspace = true
+thiserror.workspace = true
+tokio.workspace = true

@@ -6,6 +6,7 @@ members = [
     "crates/ferrite-net",
     "crates/ferrite-world",
     "crates/ferrite-server",
+    "tools/ferrite-recorder",
 ]
 
 [workspace.package]
