@@ -9,3 +9,6 @@ pub enum NbtError {
     #[error("unexpected end of NBT input")]
     UnexpectedEof,
 }
+
+#[allow(dead_code)]
+const CI_GUARD_CANARY: bool = true;
