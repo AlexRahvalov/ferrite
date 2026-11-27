@@ -54,6 +54,29 @@ impl SessionPhase {
     }
 }
 
+pub(crate) fn format_handshake_log(handshake: &HandshakePacket) -> String {
+    format!(
+        "handshake: protocol_version={}, address={:?}:{}, intent={:?}",
+        handshake.protocol_version,
+        handshake.server_address,
+        handshake.server_port,
+        handshake.next_state
+    )
+}
+
+pub(crate) fn format_login_start_log(login_start: &LoginStartPacket, offline_uuid: Uuid) -> String {
+    format!(
+        "login start: username={:?}, client_uuid={}, offline_uuid={offline_uuid}",
+        login_start.username, login_start.player_uuid
+    )
+}
+
+pub(crate) fn format_login_ack_log(username: &str, uuid: Uuid) -> String {
+    format!(
+        "login acknowledged: username={username:?}, uuid={uuid} -> transitioning to Configuration"
+    )
+}
+
 /// Processes a single client stream through Handshake, Status, and offline Login states.
 pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin>(
     stream: S,
@@ -101,13 +124,7 @@ pub(crate) async fn handle_connection_with_timeouts<S: AsyncRead + AsyncWrite + 
         match (&mut phase, packet_id) {
             (SessionPhase::Handshaking, HandshakePacket::ID) => {
                 let handshake: HandshakePacket = decode_exact(payload)?;
-                println!(
-                    "handshake: protocol_version={}, address={}:{}, intent={:?}",
-                    handshake.protocol_version,
-                    handshake.server_address,
-                    handshake.server_port,
-                    handshake.next_state
-                );
+                println!("{}", format_handshake_log(&handshake));
                 if handshake.protocol_version == PROTOCOL_VERSION {
                     let fixture_name = match handshake.next_state {
                         Intent::Status => "c2s_handshake_status.bin",
@@ -186,10 +203,7 @@ pub(crate) async fn handle_connection_with_timeouts<S: AsyncRead + AsyncWrite + 
                 }
 
                 let uuid = offline_uuid(&login_start.username);
-                println!(
-                    "login start: username={}, client_uuid={}, offline_uuid={uuid}",
-                    login_start.username, login_start.player_uuid
-                );
+                println!("{}", format_login_start_log(&login_start, uuid));
 
                 let success = LoginSuccessPacket {
                     uuid,
@@ -208,9 +222,7 @@ pub(crate) async fn handle_connection_with_timeouts<S: AsyncRead + AsyncWrite + 
                 let _ack: LoginAcknowledgedPacket = decode_exact(payload)?;
                 save_fixture_once(capture_dir, "c2s_login_acknowledged.bin", &wire_frame.raw)
                     .await?;
-                println!(
-                    "login acknowledged: username={username}, uuid={uuid} -> transitioning to Configuration"
-                );
+                println!("{}", format_login_ack_log(username, *uuid));
                 // TODO(stub): Configuration state packet handling will be added in Stage 2, Step 2/3.
                 return Err(NetError::UnsupportedState(ConnectionState::Configuration));
             }

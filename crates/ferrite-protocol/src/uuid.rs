@@ -57,7 +57,7 @@ impl Uuid {
             _ => return Err(ProtocolError::InvalidUuidString),
         };
 
-        if hex_only.len() != 32 {
+        if hex_only.len() != 32 || !hex_only.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err(ProtocolError::InvalidUuidString);
         }
 
@@ -225,5 +225,48 @@ mod tests {
         assert_eq!(Uuid::parse_str(&uuid.to_string()).unwrap(), uuid);
         assert_eq!(uuid.as_bytes()[6] >> 4, 3, "must be UUID version 3");
         assert_eq!(uuid.as_bytes()[8] >> 6, 0b10, "must be RFC 4122 variant");
+    }
+
+    #[test]
+    fn parse_str_rejects_non_hex_and_plus_prefixed_nibbles() {
+        for invalid in [
+            "+0+1+2+3-+4+5-+6+7-+8+9-+a+b+c+d+e+f",
+            "+0+1+2+3+4+5+6+7+8+9+a+b+c+d+e+f",
+            "g0010203-0405-0607-0809-0a0b0c0d0e0f",
+            " 0010203-0405-0607-0809-0a0b0c0d0e0f",
+        ] {
+            let parsed = Uuid::parse_str(invalid);
+            assert!(
+                matches!(parsed, Err(ProtocolError::InvalidUuidString)),
+                "expected InvalidUuidString for {invalid:?}, got {parsed:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_str_multibyte_utf8_exact_uuid_byte_lengths_do_not_panic() {
+        // 16 Cyrillic chars = exactly 32 UTF-8 bytes (same byte length as hex-only UUID).
+        let cyrillic_32 = "ИльяТестАБВГДЕЖЗ";
+        assert_eq!(cyrillic_32.len(), 32);
+        assert!(matches!(
+            Uuid::parse_str(cyrillic_32),
+            Err(ProtocolError::InvalidUuidString)
+        ));
+
+        // 36 UTF-8 bytes with '-' at exact hyphen byte offsets [8, 13, 18, 23].
+        let cyrillic_36_with_hyphens = "Илья-Те-ст-АБ-ВГДЕЖЗ";
+        assert_eq!(cyrillic_36_with_hyphens.len(), 36);
+        assert!(matches!(
+            Uuid::parse_str(cyrillic_36_with_hyphens),
+            Err(ProtocolError::InvalidUuidString)
+        ));
+
+        // 36 UTF-8 bytes where byte index 8 lands inside a 3-byte UTF-8 sequence ('─' = 3B).
+        let mid_char_boundary_36 = "────────────";
+        assert_eq!(mid_char_boundary_36.len(), 36);
+        assert!(matches!(
+            Uuid::parse_str(mid_char_boundary_36),
+            Err(ProtocolError::InvalidUuidString)
+        ));
     }
 }

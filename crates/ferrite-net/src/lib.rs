@@ -861,4 +861,44 @@ mod tests {
 
         let _ = tokio::fs::remove_dir_all(&dir).await;
     }
+
+    #[test]
+    fn client_strings_with_newlines_and_ansi_are_escaped_in_logs() {
+        let hs = HandshakePacket {
+            protocol_version: PROTOCOL_VERSION,
+            server_address:
+                "127.0.0.1\r\ncaptured wire fixture: forged\x1b[31m\u{9b}2J\u{202e}evil".to_owned(),
+            server_port: 25565,
+            next_state: Intent::Login,
+        };
+        let malicious_nick = "bad\r\n\x1b\u{9b}\u{202e}x";
+        let ls = LoginStartPacket {
+            username: malicious_nick.to_owned(),
+            player_uuid: SANITIZED_FIXTURE_UUID,
+        };
+
+        for log_line in [
+            crate::session::format_handshake_log(&hs),
+            crate::session::format_login_start_log(&ls, offline_uuid(malicious_nick)),
+            crate::session::format_login_ack_log(malicious_nick, offline_uuid(malicious_nick)),
+        ] {
+            assert!(
+                !log_line.contains('\n') && !log_line.contains('\r'),
+                "log line must not contain raw CR/LF: {log_line:?}"
+            );
+            assert!(
+                !log_line.chars().any(|c| c.is_control()
+                    || matches!(
+                        c,
+                        '\u{202a}'..='\u{202e}'
+                            | '\u{2066}'..='\u{2069}'
+                            | '\u{200e}'
+                            | '\u{200f}'
+                            | '\u{061c}'
+                            | '\u{feff}'
+                    )),
+                "log line must not contain raw C0/C1 control or bidi override chars: {log_line:?}"
+            );
+        }
+    }
 }
