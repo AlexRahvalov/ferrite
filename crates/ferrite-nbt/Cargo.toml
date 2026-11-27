@@ -1,0 +1,9 @@
+[package]
+name = "ferrite-nbt"
+description = "Named Binary Tag (NBT) reader and writer for Ferrite"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true

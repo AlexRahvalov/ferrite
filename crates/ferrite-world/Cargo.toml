@@ -1,0 +1,10 @@
+[package]
+name = "ferrite-world"
+description = "Chunks, Anvil storage, and world generation for Ferrite"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ferrite-nbt.workspace = true
+thiserror.workspace = true

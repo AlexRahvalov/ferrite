@@ -1,0 +1,12 @@
+[package]
+name = "ferrite-server"
+description = "High-performance voxel sandbox server binary for Ferrite"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+ferrite-net.workspace = true
+ferrite-protocol.workspace = true
+tokio.workspace = true

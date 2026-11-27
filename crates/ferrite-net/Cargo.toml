@@ -1,0 +1,11 @@
+[package]
+name = "ferrite-net"
+description = "Async TCP networking layer for Ferrite"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ferrite-protocol.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
