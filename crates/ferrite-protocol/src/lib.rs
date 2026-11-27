@@ -4,15 +4,22 @@
 
 pub mod codec;
 pub mod error;
+pub mod login;
 pub mod packet;
 pub mod status;
+pub mod uuid;
 
 pub use error::ProtocolError;
+pub use login::{
+    LoginAcknowledgedPacket, LoginDisconnectPacket, LoginProperty, LoginStartPacket,
+    LoginSuccessPacket,
+};
 pub use packet::{
     decode_exact, ConnectionState, HandshakePacket, Intent, Packet, PingRequestPacket,
     PongResponsePacket, StatusRequestPacket, StatusResponsePacket,
 };
 pub use status::{Description, PlayerSample, PlayersInfo, ServerStatus, VersionInfo};
+pub use uuid::{offline_uuid, Uuid};
 
 /// Target game version string reported in server list status.
 pub const GAME_VERSION: &str = "26.3";

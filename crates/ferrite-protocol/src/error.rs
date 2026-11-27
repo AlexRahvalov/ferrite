@@ -33,6 +33,18 @@ pub enum ProtocolError {
     #[error("invalid handshake intent: {0}")]
     InvalidIntent(i32),
 
+    /// Boolean byte was neither `0x00` nor `0x01`.
+    #[error("invalid boolean byte: {0:#04x}")]
+    InvalidBoolean(u8),
+
+    /// Prefixed array length exceeded the allowed maximum for that field.
+    #[error("array length {len} exceeds maximum {max}")]
+    ArrayTooLong { len: usize, max: usize },
+
+    /// UUID text representation was malformed.
+    #[error("invalid UUID string")]
+    InvalidUuidString,
+
     /// Packet had unread bytes remaining after decoding.
     #[error("packet had {0} trailing unread bytes")]
     TrailingBytes(usize),

@@ -1,6 +1,6 @@
 //! Low-level wire format primitives and packet framing.
 
-use crate::{ProtocolError, MAX_PACKET_LEN};
+use crate::{ProtocolError, Uuid, MAX_PACKET_LEN};
 
 /// Maximum number of bytes a 32-bit VarInt may occupy on the wire.
 pub const MAX_VARINT_BYTES: usize = 5;
@@ -161,6 +161,41 @@ pub fn write_i64(value: i64, out: &mut Vec<u8>) {
     out.extend_from_slice(&value.to_be_bytes());
 }
 
+/// Reads a single-byte protocol `Boolean` (`0x00` = `false`, `0x01` = `true`).
+pub fn read_bool(input: &mut &[u8]) -> Result<bool, ProtocolError> {
+    let Some((&byte, rest)) = input.split_first() else {
+        return Err(ProtocolError::UnexpectedEof);
+    };
+    *input = rest;
+    match byte {
+        0x00 => Ok(false),
+        0x01 => Ok(true),
+        other => Err(ProtocolError::InvalidBoolean(other)),
+    }
+}
+
+/// Writes a single-byte protocol `Boolean` (`0x00` or `0x01`).
+pub fn write_bool(value: bool, out: &mut Vec<u8>) {
+    out.push(u8::from(value));
+}
+
+/// Reads a 16-byte big-endian [`Uuid`] from `input`.
+pub fn read_uuid(input: &mut &[u8]) -> Result<Uuid, ProtocolError> {
+    if input.len() < 16 {
+        return Err(ProtocolError::UnexpectedEof);
+    }
+    let (bytes, rest) = input.split_at(16);
+    *input = rest;
+    let mut arr = [0u8; 16];
+    arr.copy_from_slice(bytes);
+    Ok(Uuid::from_bytes(arr))
+}
+
+/// Writes a 16-byte big-endian [`Uuid`] to `out`.
+pub fn write_uuid(value: Uuid, out: &mut Vec<u8>) {
+    out.extend_from_slice(value.as_bytes());
+}
+
 /// Encodes an uncompressed length-prefixed packet frame (`Length | PacketID | Payload`).
 pub fn encode_frame(packet_id: i32, payload: &[u8]) -> Result<Vec<u8>, ProtocolError> {
     let body_len = varint_len(packet_id) + payload.len();
@@ -265,5 +300,27 @@ mod tests {
         let (id, payload) = decode_frame(slice).unwrap();
         assert_eq!(id, 0x01);
         assert_eq!(payload, &[1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn bool_and_uuid_roundtrip() {
+        let uuid = crate::offline_uuid("TestPlayer");
+        let mut buf = Vec::new();
+        write_bool(false, &mut buf);
+        write_bool(true, &mut buf);
+        write_uuid(uuid, &mut buf);
+
+        let mut slice = buf.as_slice();
+        assert!(!read_bool(&mut slice).unwrap());
+        assert!(read_bool(&mut slice).unwrap());
+        assert_eq!(read_uuid(&mut slice).unwrap(), uuid);
+        assert!(slice.is_empty());
+
+        let invalid = [0x02];
+        let mut bad_slice = invalid.as_slice();
+        assert!(matches!(
+            read_bool(&mut bad_slice),
+            Err(ProtocolError::InvalidBoolean(0x02))
+        ));
     }
 }
