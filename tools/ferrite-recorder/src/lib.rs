@@ -623,6 +623,9 @@ pub async fn create_recording_file(
     Ok((path, file))
 }
 
+#[allow(dead_code)]
+const CI_GUARD_TOOLS_CANARY: bool = true;
+
 #[cfg(test)]
 mod tests {
     use super::*;
