@@ -26,7 +26,13 @@ async fn main() -> Result<()> {
         enforces_secure_chat: None,
     };
 
-    let listener = ServerListener::bind(&bind_addr, status, NetConfig::default())
+    let capture_dir = std::env::var_os("FERRITE_CAPTURE_DIR").map(std::path::PathBuf::from);
+    let net_config = NetConfig {
+        capture_dir,
+        ..NetConfig::default()
+    };
+
+    let listener = ServerListener::bind(&bind_addr, status, net_config)
         .await
         .with_context(|| format!("failed to bind TCP listener on {bind_addr}"))?;
 

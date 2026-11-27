@@ -2,6 +2,7 @@
 
 use std::future::Future;
 use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -21,13 +22,18 @@ pub const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(10);
 /// Default maximum number of concurrent client connections.
 pub const DEFAULT_MAX_CONNECTIONS: usize = 1024;
 
+/// Maximum raw wire frame size (in bytes) written when `capture_dir` is enabled.
+pub const MAX_CAPTURE_FRAME_BYTES: usize = 65_536;
+
 /// Runtime configuration for [`ServerListener`].
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct NetConfig {
     /// Maximum time to wait for a complete incoming packet frame.
     pub read_timeout: Duration,
     /// Maximum number of concurrent client connections accepted at once.
     pub max_connections: usize,
+    /// Optional directory where raw incoming wire frames are saved once as `.bin` fixtures.
+    pub capture_dir: Option<PathBuf>,
 }
 
 impl Default for NetConfig {
@@ -35,6 +41,7 @@ impl Default for NetConfig {
         Self {
             read_timeout: DEFAULT_READ_TIMEOUT,
             max_connections: DEFAULT_MAX_CONNECTIONS,
+            capture_dir: None,
         }
     }
 }
@@ -117,9 +124,17 @@ impl ServerListener {
 
                     let status = Arc::clone(&self.status);
                     let read_timeout = self.config.read_timeout;
+                    let capture_dir = self.config.capture_dir.clone();
                     tokio::spawn(async move {
                         let _permit = permit;
-                        if let Err(err) = handle_connection(stream, status, read_timeout).await {
+                        if let Err(err) = handle_connection_with_capture(
+                            stream,
+                            status,
+                            read_timeout,
+                            capture_dir.as_deref(),
+                        )
+                        .await
+                        {
                             eprintln!("connection {peer_addr} closed with error: {err}");
                         }
                     });
@@ -131,10 +146,28 @@ impl ServerListener {
     }
 }
 
-/// Reads a single uncompressed VarInt-framed packet body from `reader`.
+/// Exact raw wire frame (`Length | PacketID | Payload`) read from a stream.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WireFrame {
+    /// Complete wire bytes including the VarInt length prefix.
+    pub raw: Vec<u8>,
+    header_len: usize,
+}
+
+impl WireFrame {
+    /// Returns the packet body slice (`PacketID | Payload`) after the length prefix.
+    #[must_use]
+    pub fn body(&self) -> &[u8] {
+        &self.raw[self.header_len..]
+    }
+}
+
+/// Reads a single uncompressed VarInt-framed packet from `reader`, preserving raw wire bytes.
 ///
 /// Returns `Ok(None)` on clean EOF between frames.
-pub async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Option<Vec<u8>>, NetError> {
+pub async fn read_wire_frame<R: AsyncRead + Unpin>(
+    reader: &mut R,
+) -> Result<Option<WireFrame>, NetError> {
     let mut prefix = [0u8; MAX_VARINT_BYTES];
     let mut prefix_len = 0;
 
@@ -166,9 +199,22 @@ pub async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Option<V
         }
     };
 
-    let mut body = vec![0u8; frame_len];
-    reader.read_exact(&mut body).await?;
-    Ok(Some(body))
+    let mut raw = vec![0u8; prefix_len + frame_len];
+    raw[..prefix_len].copy_from_slice(&prefix[..prefix_len]);
+    reader.read_exact(&mut raw[prefix_len..]).await?;
+    Ok(Some(WireFrame {
+        raw,
+        header_len: prefix_len,
+    }))
+}
+
+/// Reads a single uncompressed VarInt-framed packet body from `reader`.
+///
+/// Returns `Ok(None)` on clean EOF between frames.
+pub async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Option<Vec<u8>>, NetError> {
+    Ok(read_wire_frame(reader)
+        .await?
+        .map(|frame| frame.body().to_vec()))
 }
 
 /// Writes a packet as a length-prefixed frame and flushes `writer`.
@@ -182,24 +228,63 @@ pub async fn write_packet<W: AsyncWrite + Unpin, P: Packet>(
     Ok(())
 }
 
+async fn save_fixture_once(
+    capture_dir: Option<&Path>,
+    filename: &str,
+    raw: &[u8],
+) -> Result<(), std::io::Error> {
+    let Some(dir) = capture_dir else {
+        return Ok(());
+    };
+    if raw.len() > MAX_CAPTURE_FRAME_BYTES {
+        eprintln!(
+            "skipping fixture {filename}: frame size {} exceeds limit {MAX_CAPTURE_FRAME_BYTES}",
+            raw.len()
+        );
+        return Ok(());
+    }
+    tokio::fs::create_dir_all(dir).await?;
+    let path = dir.join(filename);
+    if tokio::fs::try_exists(&path).await? {
+        return Ok(());
+    }
+    tokio::fs::write(&path, raw).await?;
+    println!(
+        "captured wire fixture: {} ({} bytes)",
+        path.display(),
+        raw.len()
+    );
+    Ok(())
+}
+
 /// Processes a single client stream through Handshake and Status states.
 pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin>(
+    stream: S,
+    status: Arc<ServerStatus>,
+    read_timeout: Duration,
+) -> Result<(), NetError> {
+    handle_connection_with_capture(stream, status, read_timeout, None).await
+}
+
+/// Processes a single client stream, optionally saving raw incoming wire frames to `capture_dir`.
+pub async fn handle_connection_with_capture<S: AsyncRead + AsyncWrite + Unpin>(
     mut stream: S,
     status: Arc<ServerStatus>,
     read_timeout: Duration,
+    capture_dir: Option<&Path>,
 ) -> Result<(), NetError> {
     let mut state = ConnectionState::Handshaking;
 
     loop {
-        let frame = tokio::time::timeout(read_timeout, read_frame(&mut stream))
+        let frame = tokio::time::timeout(read_timeout, read_wire_frame(&mut stream))
             .await
             .map_err(|_| NetError::ReadTimeout(read_timeout))??;
 
-        let Some(body) = frame else {
+        let Some(wire_frame) = frame else {
             return Ok(());
         };
 
-        let (packet_id, payload) = decode_frame(&body)?;
+        let (packet_id, payload) = decode_frame(wire_frame.body())?;
 
         match (state, packet_id) {
             (ConnectionState::Handshaking, HandshakePacket::ID) => {
@@ -211,6 +296,12 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin>(
                     handshake.server_port,
                     handshake.next_state
                 );
+                let fixture_name = match handshake.next_state {
+                    Intent::Status => "c2s_handshake_status.bin",
+                    Intent::Login => "c2s_handshake_login.bin",
+                    Intent::Transfer => "c2s_handshake_transfer.bin",
+                };
+                save_fixture_once(capture_dir, fixture_name, &wire_frame.raw).await?;
                 match handshake.next_state {
                     Intent::Status => state = ConnectionState::Status,
                     other => return Err(NetError::UnsupportedIntent(other)),
@@ -218,11 +309,13 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin>(
             }
             (ConnectionState::Status, StatusRequestPacket::ID) => {
                 let _request: StatusRequestPacket = decode_exact(payload)?;
+                save_fixture_once(capture_dir, "c2s_status_request.bin", &wire_frame.raw).await?;
                 let response = status.into_packet()?;
                 write_packet(&mut stream, &response).await?;
             }
             (ConnectionState::Status, PingRequestPacket::ID) => {
                 let ping: PingRequestPacket = decode_exact(payload)?;
+                save_fixture_once(capture_dir, "c2s_ping_request.bin", &wire_frame.raw).await?;
                 let pong = PongResponsePacket {
                     timestamp: ping.timestamp,
                 };
@@ -318,5 +411,68 @@ mod tests {
         let result =
             handle_connection(server, Arc::new(test_status()), Duration::from_millis(20)).await;
         assert!(matches!(result, Err(NetError::ReadTimeout(_))));
+    }
+
+    #[tokio::test]
+    async fn capture_dir_saves_raw_wire_frames() {
+        let unique = format!(
+            "ferrite-capture-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let dir = std::env::temp_dir().join(unique);
+
+        let (mut client, server) = tokio::io::duplex(4096);
+        let dir_for_task = dir.clone();
+        let server_task = tokio::spawn(async move {
+            handle_connection_with_capture(
+                server,
+                Arc::new(test_status()),
+                Duration::from_secs(5),
+                Some(&dir_for_task),
+            )
+            .await
+        });
+
+        let handshake = HandshakePacket {
+            protocol_version: PROTOCOL_VERSION,
+            server_address: "127.0.0.1".to_owned(),
+            server_port: 25565,
+            next_state: Intent::Status,
+        };
+        let expected_hs = handshake.to_frame().unwrap();
+        let expected_req = StatusRequestPacket.to_frame().unwrap();
+        let expected_ping = PingRequestPacket { timestamp: 42 }.to_frame().unwrap();
+
+        client.write_all(&expected_hs).await.unwrap();
+        client.write_all(&expected_req).await.unwrap();
+        let _ = read_frame(&mut client).await.unwrap().unwrap();
+        client.write_all(&expected_ping).await.unwrap();
+        let _ = read_frame(&mut client).await.unwrap().unwrap();
+
+        server_task.await.unwrap().unwrap();
+
+        assert_eq!(
+            tokio::fs::read(dir.join("c2s_handshake_status.bin"))
+                .await
+                .unwrap(),
+            expected_hs
+        );
+        assert_eq!(
+            tokio::fs::read(dir.join("c2s_status_request.bin"))
+                .await
+                .unwrap(),
+            expected_req
+        );
+        assert_eq!(
+            tokio::fs::read(dir.join("c2s_ping_request.bin"))
+                .await
+                .unwrap(),
+            expected_ping
+        );
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
     }
 }

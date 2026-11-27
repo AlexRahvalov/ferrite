@@ -12,7 +12,8 @@ pub struct ServerStatus {
     pub description: Description,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub favicon: Option<String>,
-    // TODO(verify): Confirm whether 26.3 clients expect `enforcesSecureChat` in SLP JSON.
+    /// Optional flag indicating whether the server requires signed chat messages.
+    /// Verified against official 26.3 client SLP: optional, accepted when omitted (`None`).
     #[serde(rename = "enforcesSecureChat", skip_serializing_if = "Option::is_none")]
     pub enforces_secure_chat: Option<bool>,
 }
