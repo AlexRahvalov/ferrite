@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 //! Named Binary Tag (NBT) serialization and deserialization.
 
 use thiserror::Error;
