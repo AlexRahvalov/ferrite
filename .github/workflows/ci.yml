@@ -40,7 +40,7 @@ jobs:
       - name: Forbidden patterns
         shell: bash
         run: |
-          if grep -rnE '#\[ignore\]|#\[allow\(|todo!\(|unimplemented!\(' crates/ --include='*.rs'; then
+          if grep -rnE '#\[ignore\]|#!?\[allow\(|todo!\(|unimplemented!\(' crates/ tools/ --include='*.rs'; then
             echo "Forbidden construct found"
             exit 1
           fi
