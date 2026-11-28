@@ -1,6 +1,4 @@
 /target
-/purpur-server
-Cargo.lock
 *.rs.bk
 *.pdb
 .DS_Store
@@ -8,3 +6,4 @@ Thumbs.db
 recordings/
 *.rec
 purpur-server/
+server-data/
