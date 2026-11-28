@@ -3,12 +3,17 @@
 //! Target protocol: Java Edition 26.3 (protocol version 777).
 
 pub mod codec;
+pub mod config_data;
 pub mod error;
 pub mod login;
 pub mod packet;
 pub mod status;
 pub mod uuid;
 
+pub use config_data::{
+    ConfigDataError, ConfigurationData, KnownPackEntry, RegistrySkeleton, TagGroupEntry,
+    TagRegistryEntry,
+};
 pub use error::ProtocolError;
 pub use login::{
     LoginAcknowledgedPacket, LoginDisconnectPacket, LoginProperty, LoginStartPacket,

@@ -4,22 +4,33 @@
 //! - Proxy mode (default): listens on `127.0.0.1:25566`, forwards to `127.0.0.1:25565`,
 //!   and writes Login + Configuration frames into `recordings/session-<ts>-<n>.rec`.
 //! - Inspect mode (`--inspect <file.rec>`): prints packet order, IDs, byte lengths,
-//!   and `Login Success` structural metadata without dumping registry/tag contents.
+//!   and `Login` structural metadata without dumping registry/tag contents.
+//! - Extract mode (`--extract-config <file.rec> [--out <path.json>] [--overwrite]`):
+//!   strictly decodes `Configuration` skeleton (no NBT) into a gitignored JSON file
+//!   and prints numeric counts only.
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{bail, Context, Result};
-use ferrite_recorder::{create_recording_file, ensure_loopback, inspect_file, proxy_session};
+use ferrite_recorder::{
+    create_recording_file, ensure_loopback, extract_config_file, inspect_file, proxy_session,
+};
 use tokio::net::{TcpListener, TcpStream};
 
 const DEFAULT_LISTEN: &str = "127.0.0.1:25566";
 const DEFAULT_UPSTREAM: &str = "127.0.0.1:25565";
 const DEFAULT_OUT_DIR: &str = "recordings";
+const DEFAULT_EXTRACT_OUT: &str = "server-data/configuration-26.3.json";
 
 enum CliMode {
     Inspect(PathBuf),
+    ExtractConfig {
+        rec_path: PathBuf,
+        out_path: PathBuf,
+        overwrite: bool,
+    },
     Proxy {
         listen: SocketAddr,
         upstream: SocketAddr,
@@ -32,6 +43,9 @@ fn parse_args() -> Result<CliMode> {
     let mut listen_str = DEFAULT_LISTEN.to_owned();
     let mut upstream_str = DEFAULT_UPSTREAM.to_owned();
     let mut out_dir = PathBuf::from(DEFAULT_OUT_DIR);
+    let mut extract_rec: Option<PathBuf> = None;
+    let mut extract_out: Option<PathBuf> = None;
+    let mut overwrite = false;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -40,6 +54,21 @@ fn parse_args() -> Result<CliMode> {
                     .next()
                     .context("missing file path after --inspect")?;
                 return Ok(CliMode::Inspect(PathBuf::from(path)));
+            }
+            "--extract-config" => {
+                let path = args
+                    .next()
+                    .context("missing .rec file path after --extract-config")?;
+                extract_rec = Some(PathBuf::from(path));
+            }
+            "--out" => {
+                let path = args
+                    .next()
+                    .context("missing output file path after --out")?;
+                extract_out = Some(PathBuf::from(path));
+            }
+            "--overwrite" => {
+                overwrite = true;
             }
             "--listen" => {
                 listen_str = args.next().context("missing address after --listen")?;
@@ -52,9 +81,18 @@ fn parse_args() -> Result<CliMode> {
                 out_dir = PathBuf::from(dir);
             }
             other => bail!(
-                "unknown argument `{other}` (supported: --inspect <file.rec>, --listen <addr>, --upstream <addr>, --out-dir <dir>)"
+                "unknown argument `{other}` (supported: --inspect <file.rec>, --extract-config <file.rec> [--out <file.json>] [--overwrite], --listen <addr>, --upstream <addr>, --out-dir <dir>)"
             ),
         }
+    }
+
+    if let Some(rec_path) = extract_rec {
+        let out_path = extract_out.unwrap_or_else(|| PathBuf::from(DEFAULT_EXTRACT_OUT));
+        return Ok(CliMode::ExtractConfig {
+            rec_path,
+            out_path,
+            overwrite,
+        });
     }
 
     let listen: SocketAddr = listen_str
@@ -139,6 +177,23 @@ async fn main() -> Result<()> {
                 .await
                 .with_context(|| format!("failed to inspect {}", path.display()))?;
             print!("{report}");
+            Ok(())
+        }
+        CliMode::ExtractConfig {
+            rec_path,
+            out_path,
+            overwrite,
+        } => {
+            let stats = extract_config_file(&rec_path, &out_path, overwrite)
+                .await
+                .with_context(|| {
+                    format!(
+                        "failed to extract configuration from {} to {}",
+                        rec_path.display(),
+                        out_path.display()
+                    )
+                })?;
+            print!("{}", stats.format_counts_only());
             Ok(())
         }
         CliMode::Proxy {

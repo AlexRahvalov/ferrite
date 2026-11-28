@@ -4,6 +4,8 @@
 //! encounters an error or hits a size cap, recording stops with a log message
 //! while raw TCP byte forwarding continues uninterrupted.
 
+mod extract;
+
 use std::fmt::Write as _;
 use std::net::SocketAddr;
 use std::path::Path;
@@ -11,13 +13,18 @@ use std::sync::Arc;
 
 use ferrite_protocol::codec::{decode_frame, decode_varint_prefix, read_varint, MAX_VARINT_BYTES};
 use ferrite_protocol::{
-    decode_exact, offline_uuid, ConnectionState, HandshakePacket, Intent, LoginAcknowledgedPacket,
-    LoginSuccessPacket, Packet, MAX_PACKET_LEN,
+    decode_exact, offline_uuid, ConfigDataError, ConnectionState, HandshakePacket, Intent,
+    LoginAcknowledgedPacket, LoginSuccessPacket, Packet, ProtocolError, MAX_PACKET_LEN,
 };
 use thiserror::Error;
 use tokio::fs::File;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::Mutex;
+
+pub use extract::{
+    ensure_git_ignored, extract_config_file, extract_configuration_from_entries, ExtractionStats,
+    MAX_EXTRACT_REC_BYTES,
+};
 
 /// Magic header written at the start of every `.rec` capture file (`"FREC"` + version 1).
 pub const REC_MAGIC: [u8; 8] = *b"FREC\x01\x00\x00\x00";
@@ -32,8 +39,8 @@ pub const MAX_RECORD_FILE_BYTES: u64 = 16 * 1024 * 1024;
 // empty payload). Source: `PrismarineJS/minecraft-data` (`data/pc/26.1/protocol.json`, MIT)
 // and empirically confirmed on live 26.3 (protocol 777) traffic (`Seq #43` S2C `0x03`,
 // `Seq #44` C2S `0x03`).
-const S2C_FINISH_CONFIG_ID: i32 = 0x03;
-const C2S_FINISH_CONFIG_ID: i32 = 0x03;
+pub(crate) const S2C_FINISH_CONFIG_ID: i32 = 0x03;
+pub(crate) const C2S_FINISH_CONFIG_ID: i32 = 0x03;
 
 // Login-state S2C IDs that indicate upstream server misconfiguration for plain recording.
 const LOGIN_S2C_ENCRYPTION_REQUEST_ID: i32 = 0x01;
@@ -53,6 +60,37 @@ pub enum RecorderError {
     /// `.rec` file had an invalid header or truncated record.
     #[error("corrupt or truncated .rec file: {0}")]
     CorruptRecording(&'static str),
+
+    /// Output path is not ignored by `.gitignore` (`git check-ignore` did not exit 0).
+    #[error("refusing to write {0}: path is not ignored by git (check .gitignore)")]
+    OutputNotGitIgnored(std::path::PathBuf),
+
+    /// Input `.rec` file exceeded [`MAX_EXTRACT_REC_BYTES`].
+    #[error("input .rec size {len} exceeds maximum {max} bytes")]
+    InputRecordingTooLarge { len: u64, max: u64 },
+
+    /// Strict protocol/frame error while extracting `Configuration` skeleton from `.rec`.
+    #[error("strict frame decode error during extraction: {0}")]
+    StrictExtract(String),
+
+    /// Protocol codec error during strict frame extraction.
+    #[error("protocol decode error during extraction: {0}")]
+    Protocol(#[from] ProtocolError),
+
+    /// Configuration data validation/serialization failed.
+    #[error("configuration validation error: {0}")]
+    ConfigValidation(#[from] ConfigDataError),
+
+    /// Recording contained `Registry Data` entries with `has_data = true` (embedded NBT).
+    #[error(
+        "embedded NBT in Registry Data is not supported in JSON skeleton (registries_with_has_data_true={registries_with_has_data_true}, entries_with_has_data_true={entries_with_has_data_true})"
+    )]
+    EmbeddedNbtUnsupported {
+        registries_count: usize,
+        total_registry_entries: usize,
+        registries_with_has_data_true: usize,
+        entries_with_has_data_true: usize,
+    },
 }
 
 /// Validates that `addr` uses a loopback IP (`127.0.0.0/8` or `::1`).
@@ -88,7 +126,7 @@ impl Direction {
     }
 }
 
-fn state_to_u8(state: ConnectionState) -> u8 {
+pub(crate) fn state_to_u8(state: ConnectionState) -> u8 {
     match state {
         ConnectionState::Handshaking => 0,
         ConnectionState::Status => 1,
